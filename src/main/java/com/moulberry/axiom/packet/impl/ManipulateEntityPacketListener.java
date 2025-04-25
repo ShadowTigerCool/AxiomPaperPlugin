@@ -6,8 +6,6 @@ import com.moulberry.axiom.event.AxiomManipulateEntityEvent;
 import com.moulberry.axiom.integration.Integration;
 import com.moulberry.axiom.packet.PacketHandler;
 import com.moulberry.axiom.viaversion.UnknownVersionHelper;
-import io.netty.buffer.Unpooled;
-import net.kyori.adventure.text.Component;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.nbt.CompoundTag;
@@ -16,7 +14,6 @@ import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.Relative;
 import net.minecraft.world.entity.decoration.HangingEntity;
 import net.minecraft.world.entity.decoration.ItemFrame;
@@ -25,12 +22,11 @@ import net.minecraft.world.phys.Vec3;
 import org.bukkit.Location;
 import org.bukkit.craftbukkit.CraftWorld;
 import org.bukkit.entity.Player;
-import org.bukkit.plugin.messaging.PluginMessageListener;
-import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 
@@ -215,13 +211,13 @@ public class ManipulateEntityPacketListener implements PacketHandler {
             return right;
         }
 
-        for (String key : right.getAllKeys()) {
-            Tag tag = right.get(key);
+        for (String key : right.keySet()) {
+            Tag tag = Objects.requireNonNull(right.get(key));
             if (tag instanceof CompoundTag compound) {
                 if (compound.isEmpty()) {
                     left.remove(key);
-                } else if (left.contains(key, Tag.TAG_COMPOUND)) {
-                    CompoundTag child = left.getCompound(key);
+                } else if (left.getCompound(key).isPresent()) {
+                    CompoundTag child = left.getCompound(key).get();
                     child = merge(child, compound);
                     left.put(key, child);
                 } else {
