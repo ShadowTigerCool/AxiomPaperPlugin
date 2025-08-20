@@ -7,12 +7,14 @@ import com.moulberry.axiom.event.AxiomCreateWorldPropertiesEvent;
 import com.moulberry.axiom.event.AxiomModifyWorldEvent;
 import com.moulberry.axiom.integration.coreprotect.CoreProtectIntegration;
 import com.moulberry.axiom.integration.plotsquared.PlotSquaredIntegration;
+import com.moulberry.axiom.listener.NoPhysicalTriggerListener;
 import com.moulberry.axiom.operations.OperationQueue;
 import com.moulberry.axiom.operations.PendingOperation;
 import com.moulberry.axiom.packet.*;
 import com.moulberry.axiom.packet.impl.*;
-import com.moulberry.axiom.paperapi.AxiomAlreadyRegisteredException;
-import com.moulberry.axiom.paperapi.AxiomCustomBlocksAPI;
+import com.moulberry.axiom.paperapi.display.ImplServerCustomDisplays;
+import com.moulberry.axiom.paperapi.entity.ImplAxiomHiddenEntities;
+import com.moulberry.axiom.paperapi.block.ImplServerCustomBlocks;
 import com.moulberry.axiom.restrictions.AxiomPermission;
 import com.moulberry.axiom.restrictions.AxiomPermissionSet;
 import com.moulberry.axiom.restrictions.Restrictions;
@@ -40,15 +42,13 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.level.block.state.BlockState;
 import org.bukkit.*;
-import org.bukkit.block.data.BlockData;
-import org.bukkit.block.data.Orientable;
 import org.bukkit.command.CommandSender;
 import org.bukkit.configuration.Configuration;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
-import org.bukkit.inventory.ItemStack;
+import org.bukkit.event.server.PluginDisableEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.messaging.Messenger;
 import org.checkerframework.checker.nullness.qual.NonNull;
@@ -76,6 +76,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
     public final Map<UUID, Integer> playerProtocolVersion = new ConcurrentHashMap<>();
     private final Map<UUID, AxiomPermissionSet> playerPermissions = new HashMap<>();
     private final Map<UUID, PlotSquaredIntegration.PlotBounds> lastPlotBoundsForPlayers = new HashMap<>();
+    private final Set<UUID> noPhysicalTriggerPlayers = new HashSet<>();
     private final OperationQueue operationQueue = new OperationQueue();
     private final Object2IntOpenHashMap<UUID> availableDispatchSends = new Object2IntOpenHashMap<>();
     public Configuration configuration;
@@ -84,11 +85,12 @@ public class AxiomPaper extends JavaPlugin implements Listener {
     private boolean logLargeBlockBufferChanges = false;
     private int packetCollectionReadLimit = 1024;
     private long maxNbtDecompressLimit = 131072;
-    private Set<EntityType<?>> whitelistedEntities = new HashSet<>();
-    private Set<EntityType<?>> blacklistedEntities = new HashSet<>();
+    private final Set<EntityType<?>> whitelistedEntities = new HashSet<>();
+    private final Set<EntityType<?>> blacklistedEntities = new HashSet<>();
 
     private int allowedDispatchSendsPerSecond = 1024;
 
+    private boolean registeredNoPhysicalTriggerListener = false;
     public boolean logCoreProtectChanges = true;
 
     public Path blueprintFolder = null;
@@ -158,6 +160,8 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         msg.registerOutgoingPluginChannel(this, "axiom:add_server_heightmap");
         msg.registerOutgoingPluginChannel(this, "axiom:custom_blocks");
         msg.registerOutgoingPluginChannel(this, "axiom:register_custom_block_v2");
+        msg.registerOutgoingPluginChannel(this, "axiom:ignore_display_entities");
+        msg.registerOutgoingPluginChannel(this, "axiom:register_custom_items");
 
         Map<String, PacketHandler> largePayloadHandlers = new HashMap<>();
 
@@ -166,6 +170,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         registerPacketHandler("set_fly_speed", new SetFlySpeedPacketListener(this), msg, LargePayloadBehaviour.FORCE_SMALL, largePayloadHandlers);
         registerPacketHandler("teleport", new TeleportPacketListener(this), msg, LargePayloadBehaviour.FORCE_SMALL, largePayloadHandlers);
         registerPacketHandler("set_world_time", new SetTimePacketListener(this), msg, LargePayloadBehaviour.FORCE_SMALL, largePayloadHandlers);
+        registerPacketHandler("set_no_physical_trigger", new SetNoPhysicalTriggerPacketListener(this), msg, LargePayloadBehaviour.FORCE_SMALL, largePayloadHandlers);
         registerPacketHandler("set_world_property", new SetWorldPropertyListener(this), msg, LargePayloadBehaviour.FORCE_SMALL, largePayloadHandlers);
 
         registerPacketHandler("request_chunk_data", new RequestChunkDataPacketListener(this), msg,
@@ -257,20 +262,6 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         if (CoreProtectIntegration.isEnabled()) {
             this.getLogger().info("CoreProtect integration enabled");
         }
-        // todo nobuild
-        Orientable a = (Orientable) Material.OAK_LOG.createBlockData();
-        a.setAxis(Axis.X);
-        Orientable b = (Orientable) Material.CHERRY_LOG.createBlockData();
-        b.setAxis(Axis.Y);
-        Orientable c = (Orientable) Material.SPRUCE_LOG.createBlockData();
-        c.setAxis(Axis.Z);
-        var result = AxiomCustomBlocksAPI.getAPI().createAxis(Key.key("test:block"), "hello world", a, b, c);
-        result.pickBlockItemStack(new ItemStack(Material.APPLE));
-        try {
-            AxiomCustomBlocksAPI.getAPI().register(result);
-        } catch (AxiomAlreadyRegisteredException exception) {
-            exception.printStackTrace();
-        }
     }
 
     public int getMaxChunkLoadDistance(World world) {
@@ -327,12 +318,17 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         this.playerBlockRegistry.keySet().retainAll(stillActiveAxiomPlayers);
         this.playerProtocolVersion.keySet().retainAll(stillActiveAxiomPlayers);
         this.lastPlotBoundsForPlayers.keySet().retainAll(stillActiveAxiomPlayers);
+        this.noPhysicalTriggerPlayers.retainAll(stillActiveAxiomPlayers);
 
         this.failedPermissionAxiomPlayers.retainAll(stillFailedAxiomPlayers);
 
         this.operationQueue.tick();
 
         WorldExtension.tick(MinecraftServer.getServer(), this.sendMarkers, this.maxChunkRelightsPerTick, this.maxChunkSendsPerTick);
+
+        ImplServerCustomBlocks.tick();
+        ImplServerCustomDisplays.tick();
+        ImplAxiomHiddenEntities.tick();
     }
 
     public void addPendingOperation(ServerLevel level, PendingOperation operation) {
@@ -495,7 +491,6 @@ public class AxiomPaper extends JavaPlugin implements Listener {
     }
 
     public boolean canUseAxiom(Player player) {
-        player.getListeningPluginChannels();
         return this.activeAxiomPlayers.contains(player.getUniqueId());
     }
 
@@ -525,7 +520,7 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         EnumSet<AxiomPermission> denied = EnumSet.noneOf(AxiomPermission.class);
 
         for (AxiomPermission permission : AxiomPermission.values()) {
-            TriState value = player.permissionValue(permission.name);
+            TriState value = player.permissionValue(permission.getPermissionNode());
             switch (value) {
                 case FALSE -> denied.add(permission);
                 case NOT_SET -> {
@@ -548,6 +543,23 @@ public class AxiomPaper extends JavaPlugin implements Listener {
             return false;
         }
         return true;
+    }
+
+    public boolean isNoPhysicalTrigger(UUID uuid) {
+        return this.noPhysicalTriggerPlayers.contains(uuid);
+    }
+
+    public void setNoPhysicalTrigger(UUID uuid, boolean noPhysicalTrigger) {
+        if (noPhysicalTrigger) {
+            if (!this.registeredNoPhysicalTriggerListener) {
+                this.registeredNoPhysicalTriggerListener = true;
+                Bukkit.getPluginManager().registerEvents(new NoPhysicalTriggerListener(this), this);
+            }
+
+            this.noPhysicalTriggerPlayers.add(uuid);
+        } else {
+            this.noPhysicalTriggerPlayers.remove(uuid);
+        }
     }
 
     public boolean isMismatchedDataVersion(UUID uuid) {
@@ -592,6 +604,12 @@ public class AxiomPaper extends JavaPlugin implements Listener {
         AxiomModifyWorldEvent modifyWorldEvent = new AxiomModifyWorldEvent(player, world);
         Bukkit.getPluginManager().callEvent(modifyWorldEvent);
         return !modifyWorldEvent.isCancelled();
+    }
+
+    @EventHandler
+    public void onPluginUnload(PluginDisableEvent disableEvent) {
+        ImplServerCustomBlocks.unregisterAll(disableEvent.getPlugin());
+        ImplServerCustomDisplays.unregisterAll(disableEvent.getPlugin());
     }
 
     @EventHandler
