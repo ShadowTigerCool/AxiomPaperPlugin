@@ -8,7 +8,7 @@ plugins {
 }
 
 group = "com.moulberry.axiom"
-version = "5.0.0+BETA1.21.6"
+version = "5.0.2+1.21.8"
 description = "Serverside component for Axiom on Paper"
 
 java {
@@ -17,13 +17,25 @@ java {
 }
 
 repositories {
+    maven("https://repo.viaversion.com") {
+        content {
+            includeGroup("com.viaversion")
+        }
+    }
+    maven("https://maven.enginehub.org/repo/") { // WorldGuard
+        content {
+            includeGroup("com.sk89q.worldguard")
+            includeGroup("com.sk89q.worldedit")
+            includeGroup("com.sk89q.worldguard.worldguard-libs")
+            includeGroup("com.sk89q.worldedit.worldedit-libs")
+        }
+    }
+    maven("https://maven.playpro.com") { // CoreProtect
+        content {
+            includeGroup("net.coreprotect")
+        }
+    }
     mavenCentral()
-    maven("https://repo.viaversion.com")
-    maven("https://s01.oss.sonatype.org/content/repositories/snapshots/")
-    maven("https://jitpack.io")
-    maven("https://repo.papermc.io/repository/maven-public/")
-    maven("https://maven.enginehub.org/repo/") // WorldGuard
-    maven("https://maven.playpro.com") // CoreProtect
 }
 
 dependencies {
